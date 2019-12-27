@@ -1,15 +1,12 @@
-all: build runServer runClient
+all: build run
 
 rebuild: clean build
 
 build:
 	mkdir build && cd build && cmake ../ && make
 
-runServer:
+run:
 	cd build && ./server localhost
-
-runClient:
-	cd build && ./client localhost
 
 clean:
 	rm -rf build
