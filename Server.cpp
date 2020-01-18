@@ -1,303 +1,109 @@
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <sys/epoll.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <fcntl.h>
-#include <iostream>
-#include <stdlib.h>
+#include <functional>
+#include <cstdio>
+
 #include "Server.hpp"
 #include "Utils.hpp"
 
-bool Server::close_socket(int fd)
+Server::Server(int port) : socket(::socket(PF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)), epoll()
 {
-	if (close(fd) < 0)
+	if (!socket.is_valid())
 	{
-		Utils::print_error("Coldn't close socket");
-		return false;
+		LOGE("Cannot create server's socket %d", socket.get_fd());
+		throw std::runtime_error("Can't create server's socket");
 	}
-	return true;
-}
+	LOGI("Init server's socket: %d", socket.get_fd());
 
-bool Server::is_active(long long last_time, long long cur_time) const
-{
-	return cur_time - last_time < TIMEOUT_CLIENT;
-}
+	struct sockaddr_in addr;
+	std::memset(&addr, 0, sizeof(addr));
+	addr.sin_family       = AF_INET;
+	addr.sin_port         = htons(port);
+	addr.sin_addr.s_addr  = INADDR_ANY;
 
-int Server::set_non_block(int fd)
-{
-	int flags;
-	if ((flags = fcntl(fd, F_GETFL, 0) == -1)) {
-		flags = 0;
-	}
-	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-int Server::create_socket()
-{
-	int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-	if (fd < 0) {
-		Utils::print_error("Couldn't create socket");
-		return ERROR_CODE;
-	}
-	int opt = 1;
-	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) == -1) {
-		close_socket(fd);
-		Utils::print_error("Couldn't set options for socket!");
-		return ERROR_CODE;
-	}
-	return fd;
-}
-
-bool Server::bind_socket(int fd)
-{
-	sockaddr_in addr{};
-	addr.sin_port = htons(m_port);
-	addr.sin_family = AF_INET;
-	addr.sin_addr.s_addr = INADDR_ANY;
-	if (bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0)
+	if (::bind(socket.get_fd(), reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) != 0)
 	{
-		close_socket(fd);
-		Utils::print_error("Couldn't bind a listen socket");
-		return false;
+		LOGE("Cannot bind server's socket: %d", socket.get_fd());
+		throw std::runtime_error("ServerS, can't bind a socket");
 	}
-	return true;
-}
 
-bool Server::epoll_ctl_wrap(int poll, int op, int fd, unsigned events)
-{
-	struct epoll_event event{};
-	event.data.fd = fd;
-	event.events = events;
-	return epoll_ctl(poll, op, fd, &event) >= 0;
-}
-
-bool Server::add_to_poll(int fd, unsigned ev)
-{
-	return epoll_ctl_wrap(m_epoll, EPOLL_CTL_ADD, fd, ev);
-}
-
-bool Server::delete_from_poll(int fd)
-{
-	return epoll_ctl_wrap(m_epoll, EPOLL_CTL_DEL, fd, 0);
-}
-
-bool Server::modify_in_pool(int fd, int mode)
-{
-	return epoll_ctl_wrap(m_epoll, EPOLL_CTL_MOD, fd, mode);
-}
-
-Server::Server(int port) : m_port(port)
-{
-	m_listener = create_socket();
-	m_epoll = epoll_create(POLL_SIZE);
-	bind_socket(m_listener);
-	if (listen(m_listener, BACKLOG) == -1)
+	if (::listen(socket.get_fd(), 1024) != 0)
 	{
-		close_socket(m_listener);
-		close_socket(m_epoll);
-		Utils::print_error("Listen failed!");
+		LOGE("Cannot listen socket: %d", socket.get_fd());
+		throw std::runtime_error("ServerS, can't listen on socket");
 	}
-
-	if (!add_to_poll(m_listener, EPOLLIN | EPOLLET))
-	{
-		close_socket(m_listener);
-		close_socket(m_epoll);
-		Utils::print_error("Couldn't add listener to epool!");
-	}
-
-	if (!add_to_poll(0, EPOLLIN))
-	{
-		close_socket(m_listener);
-		close_socket(m_epoll);
-		Utils::print_error("Couldn't add stdin to epool!");
-	}
-	Utils::log("Prepared!");
+	LOGI("Server created: %d", socket.get_fd());
 }
 
 void Server::start()
 {
-	Utils::log("Started!");
-	while (true)
-	{
-		int ready = epoll_wait(m_epoll, events, POLL_SIZE, TIMEOUT_WAIT);
-
-		if (ready == -1)
+	LOGI("Init server: %d", socket.get_fd());
+	stopped = false;
+	epoll.add_to_poll(STDIN_FILENO, EPOLLIN, [this](uint32_t){
+		std::string s;
+		while (getline(std::cin, s))
 		{
-			if (errno != EINTR)
+			if (s.find("exit"))
 			{
-				Utils::print_error("Waiting error!");
+				LOGI("Catch server stopping");
+				stopped = true;
 			}
-			break;
 		}
-		Utils::log("Clients: " + std::to_string(ready));
-		for (std::size_t i = 0; i < ready; ++i)
+	});
+
+	epoll.add_to_poll(socket.get_fd(), EPOLLIN, [this](uint32_t){
+		struct  sockaddr_in addr {};
+		socklen_t addr_size = sizeof(addr);
+		int client = ::accept4(socket.get_fd(), reinterpret_cast<struct sockaddr*>(&addr), &addr_size, O_NONBLOCK);
+		if (client == -1)
 		{
-			if (events[i].data.fd == m_listener)
+			LOGE("Can't accept client");
+			return;
+		}
+		LOGI("Accept client: %d", client);
+		clients.emplace(client, std::make_shared<ClientFileDescriptor>(client));
+		ClientFileDescriptor& cur_client = *clients.at(client);
+		epoll.add_to_poll(client, EPOLLIN | EPOLLHUP, [this, &cur_client](uint32_t events){
+			if (EPOLLIN & events)
 			{
-				struct sockaddr_in addr{};
-				socklen_t addr_len = sizeof(addr);
-				int client = accept(m_listener, reinterpret_cast<struct sockaddr*>(&addr), &addr_len);
-
-				if (client < 0)
-				{
-					Utils::print_error("Couldn't connect!");
-					continue;
-				}
-
-				if (set_non_block(client) == -1)
-				{
-					Utils::print_error("Failed to set non block client!");
-					close_socket(client);
-					continue;
-				}
-
-				if (!add_to_poll(client, EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET))
-				{
-					Utils::print_error("Failed to register client!");
-					close_socket(client);
-				}
-				else
-				{
-					Utils::log("Connection successfully!");
-					long long cur_time = Utils::get_current_time();
-					clients[client] = { cur_time };
-					active_clients.push({ -cur_time, client });
-				}
+				cur_client.read();
+				epoll.modify_in_pool(cur_client.get_fd(), cur_client.get_events());
 			}
-			else if (events[i].data.fd == 0)
+
+			if (EPOLLOUT & events)
 			{
-				std::string line;
-				std::getline(std::cin, line);
-				if (line == "exit")
+				cur_client.write();
+				epoll.modify_in_pool(cur_client.get_fd(), cur_client.get_events());
+				if (cur_client.get_events() == EPOLLHUP)
 				{
+					LOGI("End upwriting and drop client: %d", cur_client.get_fd());
+					drop_client(cur_client.get_fd());
 					return;
 				}
 			}
-			else
+			
+			if (EPOLLHUP & events)
 			{
-
-				int cur_fd = events[i].data.fd;
-				if (events[i].events & (EPOLLERR | EPOLLHUP))
-				{
-					Utils::log("Client disconnected. Fd: " + std::to_string(cur_fd));
-					delete_from_poll(cur_fd);
-					close_socket(cur_fd);
-					clients.erase(cur_fd);
-					continue;
-				}
-
-				if (events[i].events & EPOLLIN)
-				{
-					//Utils::log("In IN");
-					int st = process_socket(cur_fd);
-					if (st > 0)
-					{
-						long long cur_time = Utils::get_current_time();
-						clients[cur_fd].set_time(cur_time);
-						active_clients.push({ -cur_time, cur_fd });
-						if (!modify_in_pool(cur_fd, EPOLLOUT | EPOLLERR | EPOLLHUP | EPOLLET))
-						{
-							Utils::print_error("Critical 1");
-							return;
-						}
-					}
-					continue;
-				}
-
-				if (events[i].events & EPOLLOUT)
-				{
-					if (clients.count(cur_fd) > 0)
-					{
-						Utils::write(cur_fd, clients[cur_fd].response);
-						long long cur_time = Utils::get_current_time();
-						clients[cur_fd].set_time(cur_time);
-						active_clients.push({ -cur_time, cur_fd });
-						if (!modify_in_pool(cur_fd, EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLET))
-						{
-							Utils::print_error("Critical 2");
-							return;
-						}
-					}
-					continue;
-				}
-				//Utils::print_error("Other operation");
-				//Utils::print_error(std::to_string(events[i].events));
+				LOGI("HUP client: %d", cur_client.get_fd());
+				drop_client(cur_client.get_fd());
+				return;
 			}
-		}
+		});
+	});
 
-		if (ready == 0)
+	LOGI("Init server's loop: %d", socket.get_fd());
+	while (!stopped)
+	{
+		auto non_active_clients = epoll.poll();
+		for (int client : non_active_clients)
 		{
-			Utils::log("Timeout wait");
-		}
-
-		// try clear clients
-		while (!active_clients.empty())
-		{
-			auto [time, fd] = active_clients.top();
-			time = -time;
-			long long cur_time = Utils::get_current_time();
-			if (clients.count(fd) > 0 && clients[fd].last_update == time)
-			{
-				if (is_active(time, cur_time))
-				{
-					break;
-				}
-				else
-				{
-					Utils::log("Client disconnected. Fd: " + std::to_string(fd));
-					delete_from_poll(fd);
-					close_socket(fd);
-					clients.erase(fd);
-					active_clients.pop();
-				}
-			}
-			else
-			{
-				active_clients.pop();
-			}
+			clients.erase(client);
+			LOGI("Drop inactive client: %d", client);
 		}
 	}
+	LOGI("Stop server: %d", socket.get_fd());
 }
 
-int Server::process_socket(int fd)
+void Server::drop_client(int fd)
 {
-	std::string request;
-	int st = Utils::read(fd, request);
-	//Utils::log("Read: " + std::to_string(st));
-	if (st == -1 || st == 0)
-	{
-		if (st == -1)
-		{
-			Utils::print_error("Client disconnected. Fd: " + std::to_string(fd));
-		}
-		else
-		{
-			Utils::log("Client disconnected. Fd: " + std::to_string(fd));
-		}	
-		delete_from_poll(fd);
-		clients.erase(fd);
-		close_socket(fd);
-	}
-	else
-	{
-		Utils::prepare(request);
-		auto result = Utils::lookup_host(request);
-		clients[fd].set_response(Utils::vector_to_str(result));
-	}
-	return st;
-}
-
-Server::~Server() {
-	Utils::log("Bye, bye, my dear admin!!!");
-	for (auto const& [fd, cl] : clients)
-	{
-		delete_from_poll(fd);
-		close_socket(fd);
-		active_clients.pop();
-	}
-	clients.clear();
-	delete_from_poll(m_listener);
-	close_socket(m_listener);
-	close_socket(m_epoll);
+	epoll.delete_from_poll(fd);
+	clients.erase(fd);
 }

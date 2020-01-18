@@ -44,6 +44,8 @@
         "chrono": "cpp",
         "csignal": "cpp",
         "ctime": "cpp",
-        "ratio": "cpp"
+        "ratio": "cpp",
+        "functional": "cpp",
+        "iterator": "cpp"
     }
 }

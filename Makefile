@@ -6,7 +6,7 @@ build:
 	mkdir build && cd build && cmake ../ && make
 
 run:
-	cd build && ./server localhost
+	cd build && ./server 44446
 
 clean:
 	rm -rf build
