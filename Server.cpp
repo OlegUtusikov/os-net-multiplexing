@@ -35,15 +35,17 @@ void Server::start() {
   LOGI("Init server: %d", socket.get_fd());
   stopped = false;
   epoll.add_to_poll(STDIN_FILENO, EPOLLIN, [this](uint32_t) {
-    std::string s;
-    while (getline(std::cin, s)) {
-      if (s.find("exit")) {
-        LOGI("Catch server stopping");
+    static char buffer[1000];
+    int len = ::read(STDIN_FILENO, buffer, sizeof(buffer));
+    if (len > 0)
+    {
+      if (std::string(buffer, len).find("exit") != std::string::npos)
+      {
+        LOGI("Stopeed setted");
         stopped = true;
       }
     }
   });
-
   epoll.add_to_poll(socket.get_fd(), EPOLLIN, [this](uint32_t) {
     struct sockaddr_in addr{};
     socklen_t addr_size = sizeof(addr);

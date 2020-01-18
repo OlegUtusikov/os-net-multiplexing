@@ -46,6 +46,7 @@
         "ctime": "cpp",
         "ratio": "cpp",
         "functional": "cpp",
-        "iterator": "cpp"
+        "iterator": "cpp",
+        "variant": "cpp"
     }
 }

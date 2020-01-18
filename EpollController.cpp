@@ -3,7 +3,7 @@
 #include "Utils.hpp"
 
 // static
-bool EpollController::is_active(std::size_t client_last_access_time_s, size_t timeout_s) {
+bool EpollController::is_active(size_t client_last_access_time_s, size_t timeout_s) {
   std::size_t cur_time = Utils::get_current_time();
   return (cur_time - client_last_access_time_s) <= timeout_s;
 }

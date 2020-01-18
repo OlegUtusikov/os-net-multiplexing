@@ -10,12 +10,12 @@ public:
   void read();
   void write();
   uint32_t get_events() const { return flags; };
+
 private:
   void parse_read_buffer();
+
 private:
-  enum {
-    BUFFER_SIZE = 1024 * 1024
-  };
+  static constexpr int BUFFER_SIZE = 1024 * 1024;
   uint32_t flags;
   char buffer[BUFFER_SIZE];
   std::string read_buffer;

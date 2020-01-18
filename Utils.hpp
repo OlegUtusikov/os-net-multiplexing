@@ -10,7 +10,7 @@
 #include <sstream>
 #include <chrono>
 
-#define LOGI(format, ...) Utils::print_log("INFO", __FILE__, __FUNCTION__, __LINE__, std::cout, format, ##__VA_ARGS__)
+#define LOGI(format, ...) Utils::print_log("INFO", __FILE__, __FUNCTION__, __LINE__, std::cerr, format, ##__VA_ARGS__)
 #define LOGE(format, ...) Utils::print_log("ERROR", __FILE__, __FUNCTION__, __LINE__, std::cerr, format, ##__VA_ARGS__)
 
 namespace Utils {
